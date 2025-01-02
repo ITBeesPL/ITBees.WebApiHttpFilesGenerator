@@ -6,11 +6,82 @@ namespace ITBees.WebApiHttpFilesGenerator;
 
 public class HttpFilesGenerator
 {
+    private static readonly string DefaultPrivateUserJson = @"{
+  ""dev"": {
+    ""adminLogin"": """",
+    ""adminPass"": """",
+    ""value"": """",
+    ""tokenExpirationDate"": ""2025-01-01T09:39:54Z"",
+    ""operatorLogin"": """",
+    ""operatorPass"": """",
+    ""valueOperator"": """",
+    ""tokenOperatorExpirationDate"": ""2025-01-02T17:12:05Z"",
+    ""userLogin"": """",
+    ""userPass"": """"
+  },
+  ""uat"": {
+    ""adminLogin"": """",
+    ""adminPass"": """",
+    ""value"": """",
+    ""tokenExpirationDate"": ""2025-01-01T09:39:54Z"",
+    ""operatorLogin"": """",
+    ""operatorPass"": """",
+    ""valueOperator"": """",
+    ""tokenOperatorExpirationDate"": ""2025-01-02T17:12:05Z"",
+    ""userLogin"": """",
+    ""userPass"": """"
+  },
+  ""prod"": {
+    ""OperatorApi_HostAddress"": """",
+    ""adminLogin"": ""kuba@skb.pl"",
+    ""adminPass"": ""Fdsjk192Fdsjk192!@"",
+    ""value"": """"
+  }
+}";
+
+    private static readonly string DefaultHttpEnvJson = @"{
+  ""dev"": {
+    ""OperatorApi_HostAddress"": ""https://localhost:5023"",
+    ""adminLogin"": """",
+    ""adminPass"": """",
+    ""operatorLogin"": """",
+    ""operatorPass"": """",
+    ""userLogin"": """",
+    ""userPass"": """"
+  },
+  ""uat"": {
+    ""OperatorApi_HostAddress"": ""https://localhost:5024"",
+    ""adminLogin"": """",
+    ""adminPass"": """",
+    ""operatorLogin"": """",
+    ""operatorPass"": """",
+    ""userLogin"": """",
+    ""userPass"": """"
+  },
+  ""prod"": {
+    ""OperatorApi_HostAddress"": ""https://localhost:5025"",
+    ""adminLogin"": """",
+    ""adminPass"": """",
+    ""operatorLogin"": """",
+    ""operatorPass"": """",
+    ""userLogin"": """",
+    ""userPass"": """"
+  }
+}";
+
+    /// <summary>
+    /// Runs file generator
+    /// </summary>
+    /// <param name="sourceAssembly">Assembly to scan for controllers.</param>
+    /// <param name="sourceCodeProjectPath">Optional: folder path where .http files should be generated.</param>
+    /// <param name="outputFolderName">Optional: subdirectory name (defaults to 'HttpApi').</param>
     public static void RegenerateHttpFiles(Assembly sourceAssembly, string? sourceCodeProjectPath = null,
         string? outputFolderName = null)
     {
+        // 1) Determine where to place our files
         if (string.IsNullOrEmpty(sourceCodeProjectPath))
         {
+            sourceCodeProjectPath = Directory.GetCurrentDirectory();
         }
 
         if (string.IsNullOrEmpty(outputFolderName))
@@ -18,15 +89,15 @@ public class HttpFilesGenerator
             outputFolderName = "HttpApi";
         }
 
-        var targetProjectFolderPath = outputFolderName;
-        var assembly = sourceAssembly;
-
-        var generator = new HttpSnippetGenerator();
-
-        var snippetsPerController = generator.GenerateHttpSnippetsPerController(assembly);
-
-        var outputDirectory = Path.Combine(targetProjectFolderPath, "HttpApi");
+        var outputDirectory = Path.Combine(sourceCodeProjectPath, outputFolderName);
         Directory.CreateDirectory(outputDirectory);
+
+        // 2) Create or overwrite the environment files if they do not exist.
+        EnsureEnvironmentFilesExist(outputDirectory);
+
+        // 3) Reflect over controllers in the specified assembly and generate .http files
+        var generator = new HttpSnippetGenerator();
+        var snippetsPerController = generator.GenerateHttpSnippetsPerController(sourceAssembly);
 
         foreach (var kv in snippetsPerController)
         {
@@ -41,10 +112,12 @@ public class HttpFilesGenerator
 
             var finalSnippets = new List<HttpSnippet>(newSnippets);
 
+            // Merge old values (queries, JSON merges) into new snippet
             foreach (var snippet in finalSnippets)
             {
                 if (dictOld.TryGetValue(snippet.RouteKey, out var oldSnippet))
                 {
+                    // Merge query params from old
                     foreach (var kvp in snippet.QueryParams.ToList())
                     {
                         if (oldSnippet.QueryParams.TryGetValue(kvp.Key, out var oldVal))
@@ -53,6 +126,7 @@ public class HttpFilesGenerator
                         }
                     }
 
+                    // Merge body from old if POST/PUT/PATCH
                     if ((snippet.Method == "POST" || snippet.Method == "PUT" || snippet.Method == "PATCH")
                         && !string.IsNullOrWhiteSpace(oldSnippet.Body))
                     {
@@ -67,7 +141,49 @@ public class HttpFilesGenerator
         }
     }
 
-    static string MergeJsonKeepingOnlyNewFields(string newBody, string oldBody)
+    /// <summary>
+    /// Checks if environment files exist in the output directory; if not, writes default content.
+    /// </summary>
+    private static void EnsureEnvironmentFilesExist(string outputDirectory)
+    {
+        // 1) http-client.private.env.json
+        var privateEnvFilePath = Path.Combine(outputDirectory, "http-client.private.env.json");
+        if (!File.Exists(privateEnvFilePath))
+        {
+            File.WriteAllText(privateEnvFilePath, DefaultPrivateUserJson);
+            Console.WriteLine("Created http-client.private.env.json with default content.");
+        }
+        else
+        {
+            Console.WriteLine("http-client.private.env.json already exists. Skipping overwrite.");
+        }
+
+        // 2) http-client.env.json.user
+        var envUserFilePath = Path.Combine(outputDirectory, "http-client.env.json.user");
+        if (!File.Exists(envUserFilePath))
+        {
+            File.WriteAllText(envUserFilePath, DefaultPrivateUserJson);
+            Console.WriteLine("Created http-client.env.json.user with default content.");
+        }
+        else
+        {
+            Console.WriteLine("http-client.env.json.user already exists. Skipping overwrite.");
+        }
+
+        // 3) http-client.env.json
+        var envJsonFilePath = Path.Combine(outputDirectory, "http-client.env.json");
+        if (!File.Exists(envJsonFilePath))
+        {
+            File.WriteAllText(envJsonFilePath, DefaultHttpEnvJson);
+            Console.WriteLine("Created http-client.env.json with default content.");
+        }
+        else
+        {
+            Console.WriteLine("http-client.env.json already exists. Skipping overwrite.");
+        }
+    }
+
+    private static string MergeJsonKeepingOnlyNewFields(string newBody, string oldBody)
     {
         JsonNode newJson, oldJson;
         try
@@ -107,18 +223,18 @@ public class HttpFilesGenerator
                             oldVal.ToJsonString()
                         );
                     }
-                    // Nowy = obiekt, stary = string => zostaw nowy obiekt
+                    // Nowy = obiekt, stary = string => keep new
                     else if (newVal is JsonObject && oldVal is JsonValue)
                     {
-                        // nic nie robimy
+                        // do nothing
                     }
-                    // Nowy = string, stary = obiekt => zostaw stary obiekt
+                    // Nowy = string, stary = obiekt => keep old obj
                     else if (newVal is JsonValue && oldVal is JsonObject)
                     {
                         var oldValClone = JsonNode.Parse(oldVal.ToJsonString());
                         newObj[propName] = oldValClone;
                     }
-                    // Standard -> klonujemy starego
+                    // otherwise -> clone old
                     else
                     {
                         var oldValClone = JsonNode.Parse(oldVal.ToJsonString());
@@ -126,7 +242,6 @@ public class HttpFilesGenerator
                     }
                 }
             }
-
             return newObj.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         }
 
