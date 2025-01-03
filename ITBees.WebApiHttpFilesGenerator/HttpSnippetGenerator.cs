@@ -231,10 +231,14 @@ public class HttpSnippetGenerator
 
     private string GetControllerRoute(Type controllerType)
     {
-        var routeAttr = controllerType.GetCustomAttribute<RouteAttribute>();
-        if (routeAttr != null && !string.IsNullOrWhiteSpace(routeAttr.Template))
+        var allRoutes = controllerType.GetCustomAttributes<RouteAttribute>(inherit: false).ToList();
+        if (allRoutes.Any())
         {
-            return routeAttr.Template.TrimStart('/');
+            var firstWithTemplate = allRoutes.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.Template));
+            if (firstWithTemplate != null)
+            {
+                return firstWithTemplate.Template.TrimStart('/');
+            }
         }
 
         var name = controllerType.Name;
