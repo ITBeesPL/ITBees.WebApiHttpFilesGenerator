@@ -11,6 +11,7 @@ public class HttpSnippetGenerator
         var controllers = assembly
             .GetTypes()
             .Where(t => !t.IsAbstract && typeof(ControllerBase).IsAssignableFrom(t))
+            .Where(t => !t.IsGenericType || t.IsConstructedGenericType)
             .ToList();
 
         var result = new Dictionary<string, List<HttpSnippet>>();
@@ -50,12 +51,11 @@ public class HttpSnippetGenerator
                     }
                 }
             }
-
             snippets.Add(snippet);
         }
+
         return snippets;
     }
-
 
     private HttpSnippet BuildSnippetForAction(MethodInfo method, string baseRoute)
     {
@@ -80,16 +80,13 @@ public class HttpSnippetGenerator
         var fromBodyParam = method.GetParameters()
             .FirstOrDefault(p => p.GetCustomAttribute<FromBodyAttribute>() != null);
 
-        bool canGenerateBody = (fromBodyParam != null);
-    
-        if (canGenerateBody)
+        if (fromBodyParam != null)
         {
             snippet.Body = GenerateJsonForType(fromBodyParam.ParameterType);
         }
-    
+
         return snippet;
     }
-
 
     private bool IsRouteParameter(MethodInfo method, ParameterInfo param)
     {
@@ -97,26 +94,13 @@ public class HttpSnippetGenerator
         if (httpAttr == null) return false;
 
         var route = GetMethodRoute(httpAttr);
-        if (route.Contains($"{{{param.Name}}}", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        if (param.GetCustomAttribute<FromRouteAttribute>() != null)
-            return true;
-
+        if (route.Contains($"{{{param.Name}}}", StringComparison.OrdinalIgnoreCase)) return true;
+        if (param.GetCustomAttribute<FromRouteAttribute>() != null) return true;
         return false;
     }
 
-    /// <summary>
-    /// Here we handle special param names:
-    /// page -> 1
-    /// pageSize -> 25
-    /// sortColumn -> Id
-    /// sortOrder -> Descending
-    /// Otherwise fallback to general logic.
-    /// </summary>
     private string GenerateQueryValue(Type t, string paramName)
     {
-        // first handle special param names:
         switch (paramName.ToLowerInvariant())
         {
             case "page":
@@ -129,36 +113,28 @@ public class HttpSnippetGenerator
                 return "Descending";
         }
 
-        // if not special param => fallback
         t = Nullable.GetUnderlyingType(t) ?? t;
+        if (t == typeof(Guid)) return "00000000-0000-0000-0000-000000000000";
+        if (t == typeof(string)) return "stringValue";
+        if (t == typeof(bool)) return "false";
+        if (t.IsEnum) return Enum.GetNames(t).FirstOrDefault() ?? "EnumValue";
+        if (t == typeof(DateTime)) return "2024-01-01T00:00:00";
 
-        if (t == typeof(Guid))
-            return "00000000-0000-0000-0000-000000000000";
-        if (t == typeof(string))
-            return "stringValue";
-        if (t == typeof(bool))
-            return "false";
-        if (t.IsEnum)
-            return Enum.GetNames(t).FirstOrDefault() ?? "EnumValue";
-        if (t == typeof(DateTime))
-            return "2024-01-01T00:00:00";
+        // Handle DateOnly
+        if (t.FullName == "System.DateOnly") return "2024-01-01";
+
         if (t == typeof(int) || t == typeof(long) || t == typeof(short)
             || t == typeof(decimal) || t == typeof(float) || t == typeof(double))
         {
             return "0";
         }
-
-        // fallback
         return "stringValue";
     }
 
     private string GenerateJsonForType(Type type, int depth = 0)
     {
-        if (depth > 5)
-            return "{ \"_recursiveLimit\": true }";
-
-        if (IsSimpleType(type))
-            return GenerateSimpleValue(type);
+        if (depth > 5) return "{ \"_recursiveLimit\": true }";
+        if (IsSimpleType(type)) return GenerateSimpleValue(type);
 
         var sb = new StringBuilder();
         sb.AppendLine("{");
@@ -193,6 +169,7 @@ public class HttpSnippetGenerator
     private bool IsSimpleType(Type t)
     {
         t = Nullable.GetUnderlyingType(t) ?? t;
+        if (t.FullName == "System.DateOnly") return true;
         return t.IsPrimitive
                || t == typeof(string)
                || t == typeof(decimal)
@@ -204,30 +181,24 @@ public class HttpSnippetGenerator
     private string GenerateSimpleValue(Type t)
     {
         t = Nullable.GetUnderlyingType(t) ?? t;
-
-        if (t == typeof(string))
-            return "\"stringValue\"";
-        if (t == typeof(bool))
-            return "false";
+        if (t == typeof(string)) return "\"stringValue\"";
+        if (t == typeof(bool)) return "false";
         if (t.IsEnum)
         {
             var names = Enum.GetNames(t);
             return names.Length > 0 ? $"\"{names[0]}\"" : "\"EnumValue\"";
         }
+        if (t == typeof(DateTime)) return "\"2024-01-01T00:00:00\"";
+        if (t == typeof(Guid)) return "\"00000000-0000-0000-0000-000000000000\"";
 
-        if (t == typeof(DateTime))
-            return "\"2024-01-01T00:00:00\"";
-        if (t == typeof(Guid))
-            return "\"00000000-0000-0000-0000-000000000000\"";
+        // DateOnly
+        if (t.FullName == "System.DateOnly") return "\"2024-01-01\"";
 
-        // dopisz ushort:
         if (t == typeof(ushort) || t == typeof(short) || t == typeof(int) || t == typeof(long)
             || t == typeof(float) || t == typeof(double) || t == typeof(decimal))
         {
             return "0";
         }
-
-        // fallback
         return "\"\"";
     }
 
@@ -239,7 +210,6 @@ public class HttpSnippetGenerator
         return string.Join(Environment.NewLine, indentedLines);
     }
 
-    // standard
     private bool IsHttpMethodAttribute(Type t)
     {
         return t == typeof(HttpGetAttribute)
@@ -283,7 +253,6 @@ public class HttpSnippetGenerator
             var val = prop.GetValue(httpMethodAttribute) as string;
             return val?.Trim('/') ?? string.Empty;
         }
-
         return string.Empty;
     }
 
@@ -291,7 +260,6 @@ public class HttpSnippetGenerator
     {
         if (string.IsNullOrWhiteSpace(controllerName))
             controllerName = "UnknownController";
-
         if (controllerName.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
             controllerName = controllerName.Substring(0, controllerName.Length - 10);
 
@@ -304,7 +272,6 @@ public class HttpSnippetGenerator
                 baseRoute += "/";
             baseRoute += methodRoute;
         }
-
         return baseRoute;
     }
 }
