@@ -185,7 +185,9 @@ public class HttpFilesGenerator
 
     private static string MergeJsonKeepingOnlyNewFields(string newBody, string oldBody)
     {
-        JsonNode newJson, oldJson;
+        JsonNode newJson;
+        JsonNode oldJson;
+
         try
         {
             newJson = JsonNode.Parse(newBody);
@@ -211,37 +213,56 @@ public class HttpFilesGenerator
                 var propName = kv.Key;
                 var newVal = kv.Value;
 
-                if (oldObj.ContainsKey(propName))
-                {
-                    var oldVal = oldObj[propName];
+                if (!oldObj.ContainsKey(propName))
+                    continue;
 
-                    // Obiekt + Obiekt => rekurencja
-                    if (newVal is JsonObject && oldVal is JsonObject)
+                var oldVal = oldObj[propName];
+
+                // Both are objects: go deeper
+                if (newVal is JsonObject && oldVal is JsonObject)
+                {
+                    newObj[propName] = MergeJsonKeepingOnlyNewFields(
+                        newVal.ToJsonString(),
+                        oldVal.ToJsonString()
+                    );
+                }
+                // new is object, old is string => try to parse old string as object, then merge
+                else if (newVal is JsonObject newValObj && oldVal is JsonValue oldValString)
+                {
+                    try
                     {
-                        newObj[propName] = MergeJsonKeepingOnlyNewFields(
-                            newVal.ToJsonString(),
-                            oldVal.ToJsonString()
-                        );
+                        var parsedOldVal = JsonNode.Parse(oldValString.ToJsonString());
+                        if (parsedOldVal is JsonObject oldValObj)
+                        {
+                            // attempt a deeper merge if user changed data
+                            var merged =
+                                MergeJsonKeepingOnlyNewFields(newValObj.ToJsonString(), oldValObj.ToJsonString());
+                            newObj[propName] = JsonNode.Parse(merged);
+                        }
+                        else
+                        {
+                            // keep new object
+                        }
                     }
-                    // Nowy = obiekt, stary = string => keep new
-                    else if (newVal is JsonObject && oldVal is JsonValue)
+                    catch
                     {
-                        // do nothing
-                    }
-                    // Nowy = string, stary = obiekt => keep old obj
-                    else if (newVal is JsonValue && oldVal is JsonObject)
-                    {
-                        var oldValClone = JsonNode.Parse(oldVal.ToJsonString());
-                        newObj[propName] = oldValClone;
-                    }
-                    // otherwise -> clone old
-                    else
-                    {
-                        var oldValClone = JsonNode.Parse(oldVal.ToJsonString());
-                        newObj[propName] = oldValClone;
+                        // keep new object
                     }
                 }
+                // new is string, old is object => keep old object
+                else if (newVal is JsonValue && oldVal is JsonObject oldValObj2)
+                {
+                    var clone = JsonNode.Parse(oldValObj2.ToJsonString());
+                    newObj[propName] = clone;
+                }
+                // fallback => clone old
+                else
+                {
+                    var oldValClone = JsonNode.Parse(oldVal.ToJsonString());
+                    newObj[propName] = oldValClone;
+                }
             }
+
             return newObj.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
         }
 
