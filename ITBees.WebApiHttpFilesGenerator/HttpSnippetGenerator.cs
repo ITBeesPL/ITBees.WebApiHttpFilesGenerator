@@ -11,16 +11,19 @@ public class HttpSnippetGenerator
         var controllers = assembly
             .GetTypes()
             .Where(t => !t.IsAbstract && typeof(ControllerBase).IsAssignableFrom(t))
-            .Where(t => !t.IsGenericType || t.IsConstructedGenericType)
             .ToList();
 
         var result = new Dictionary<string, List<HttpSnippet>>();
 
         foreach (var controllerType in controllers)
         {
-            var controllerName = controllerType.Name;
             var snippetList = BuildSnippetsForController(controllerType);
-            result[controllerName] = snippetList;
+            if (snippetList.Any())
+            {
+                // Remove any generic backtick part (e.g. `1) in the controller name
+                var controllerName = RemoveGenericTicksFromName(controllerType.Name);
+                result[controllerName] = snippetList;
+            }
         }
 
         return result;
@@ -62,10 +65,14 @@ public class HttpSnippetGenerator
         var httpMethodAttr = method
             .GetCustomAttributes()
             .FirstOrDefault(a => IsHttpMethodAttribute(a.GetType()));
+        if (httpMethodAttr == null)
+        {
+            return null; 
+        }
 
         var httpMethod = ResolveHttpMethod(httpMethodAttr.GetType());
         var methodRoute = GetMethodRoute(httpMethodAttr);
-        var combinedRoute = CombineRoutes(baseRoute, methodRoute, method.DeclaringType?.Name);
+        var combinedRoute = CombineRoutes(baseRoute, methodRoute, method.DeclaringType);
 
         var snippet = new HttpSnippet
         {
@@ -94,8 +101,12 @@ public class HttpSnippetGenerator
         if (httpAttr == null) return false;
 
         var route = GetMethodRoute(httpAttr);
-        if (route.Contains($"{{{param.Name}}}", StringComparison.OrdinalIgnoreCase)) return true;
-        if (param.GetCustomAttribute<FromRouteAttribute>() != null) return true;
+        if (route.Contains($"{{{param.Name}}}", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (param.GetCustomAttribute<FromRouteAttribute>() != null)
+            return true;
+
         return false;
     }
 
@@ -119,8 +130,6 @@ public class HttpSnippetGenerator
         if (t == typeof(bool)) return "false";
         if (t.IsEnum) return Enum.GetNames(t).FirstOrDefault() ?? "EnumValue";
         if (t == typeof(DateTime)) return "2024-01-01T00:00:00";
-
-        // Handle DateOnly
         if (t.FullName == "System.DateOnly") return "2024-01-01";
 
         if (t == typeof(int) || t == typeof(long) || t == typeof(short)
@@ -133,8 +142,10 @@ public class HttpSnippetGenerator
 
     private string GenerateJsonForType(Type type, int depth = 0)
     {
-        if (depth > 5) return "{ \"_recursiveLimit\": true }";
-        if (IsSimpleType(type)) return GenerateSimpleValue(type);
+        if (depth > 5)
+            return "{ \"_recursiveLimit\": true }";
+        if (IsSimpleType(type))
+            return GenerateSimpleValue(type);
 
         var sb = new StringBuilder();
         sb.AppendLine("{");
@@ -190,8 +201,6 @@ public class HttpSnippetGenerator
         }
         if (t == typeof(DateTime)) return "\"2024-01-01T00:00:00\"";
         if (t == typeof(Guid)) return "\"00000000-0000-0000-0000-000000000000\"";
-
-        // DateOnly
         if (t.FullName == "System.DateOnly") return "\"2024-01-01\"";
 
         if (t == typeof(ushort) || t == typeof(short) || t == typeof(int) || t == typeof(long)
@@ -229,19 +238,34 @@ public class HttpSnippetGenerator
         return "GET";
     }
 
+    private string RemoveGenericTicksFromName(string rawName)
+    {
+        if (rawName.Contains('`'))
+        {
+            var backtickIndex = rawName.IndexOf('`');
+            return rawName.Substring(0, backtickIndex);
+        }
+        return rawName;
+    }
+
     private string GetControllerRoute(Type controllerType)
     {
-        var allRoutes = controllerType.GetCustomAttributes<RouteAttribute>(inherit: false).ToList();
-        if (allRoutes.Any())
+        var allRoutes = controllerType.GetCustomAttributes<RouteAttribute>(false).ToList();
+        var firstWithTemplate = allRoutes.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.Template));
+        if (firstWithTemplate != null)
         {
-            var firstWithTemplate = allRoutes.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.Template));
-            if (firstWithTemplate != null)
+            var template = firstWithTemplate.Template.TrimStart('/');
+            if (template.Contains("[controller]", StringComparison.OrdinalIgnoreCase))
             {
-                return firstWithTemplate.Template.TrimStart('/');
+                var baseName = RemoveGenericTicksFromName(controllerType.Name);
+                if (baseName.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
+                    baseName = baseName.Substring(0, baseName.Length - 10);
+                return template.Replace("[controller]", baseName.ToLower());
             }
+            return template;
         }
 
-        var name = controllerType.Name;
+        var name = RemoveGenericTicksFromName(controllerType.Name);
         if (name.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
             name = name.Substring(0, name.Length - 10);
         return name.ToLower();
@@ -260,22 +284,28 @@ public class HttpSnippetGenerator
         return string.Empty;
     }
 
-    private string CombineRoutes(string baseRoute, string methodRoute, string controllerName)
+    private string CombineRoutes(string baseRoute, string methodRoute, MemberInfo declaringType)
     {
-        if (string.IsNullOrWhiteSpace(controllerName))
-            controllerName = "UnknownController";
-        if (controllerName.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
-            controllerName = controllerName.Substring(0, controllerName.Length - 10);
+        var baseName = "unknown";
+        if (declaringType != null)
+        {
+            baseName = RemoveGenericTicksFromName(declaringType.Name);
+            if (baseName.EndsWith("Controller", StringComparison.OrdinalIgnoreCase))
+                baseName = baseName.Substring(0, baseName.Length - 10);
+        }
 
-        var lowercaseName = controllerName.ToLower();
-        baseRoute = baseRoute.Replace("[controller]", lowercaseName);
+        if (baseRoute.Contains("[controller]", StringComparison.OrdinalIgnoreCase))
+        {
+            baseRoute = baseRoute.Replace("[controller]", baseName.ToLower());
+        }
 
-        if (!string.IsNullOrEmpty(methodRoute))
+        if (!string.IsNullOrWhiteSpace(methodRoute))
         {
             if (!baseRoute.EndsWith("/"))
                 baseRoute += "/";
             baseRoute += methodRoute;
         }
+
         return baseRoute;
     }
 }
